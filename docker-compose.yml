@@ -11,6 +11,7 @@ services:
       - ./business_gemini_session.json:/app/business_gemini_session.json
       - ./index.html:/app/index.html
       - ./gemini.py:/app/gemini.py
+      - ./cookie_refresh.py:/app/cookie_refresh.py
     environment:
       - PYTHONUNBUFFERED=1
     healthcheck:

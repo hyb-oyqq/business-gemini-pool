@@ -8,6 +8,7 @@
 /
 ├── gemini.py                      # 后端服务主程序
 ├── index.html                     # Web 管理控制台前端
+├── cookie_refresh.py              # Cookie 自动刷新模块
 ├── business_gemini_session.json   # 配置文件
 └── README.md                      # 项目文档
 ```
@@ -39,6 +40,7 @@ curl --location --request POST 'http://127.0.0.1:8000/v1/chat/completions' \
 - **流式响应**: 支持 SSE (Server-Sent Events) 流式输出
 - **代理支持**: 支持 HTTP/HTTPS 代理配置
 - **JWT 自动管理**: 自动获取和刷新 JWT Token
+- **Cookie 自动刷新**: 每小时自动刷新所有账号的 Cookie 并更新到本地配置（需要 Playwright）
 
 ### 管理功能
 - **Web 控制台**: 美观的 Web 管理界面，支持明暗主题切换
@@ -142,6 +144,7 @@ curl --location --request POST 'http://127.0.0.1:8000/v1/chat/completions' \
 |------|------|------|
 | `proxy` | string | HTTP 代理地址 |
 | `proxy_enabled` | boolean | 代理开关，`true` 启用代理，`false` 禁用代理（默认 `false`） |
+| `auto_refresh_cookie` | boolean | Cookie 自动刷新开关，`true` 启用，`false` 禁用（默认 `false`） |
 | `accounts` | array | 账号列表 |
 | `accounts[].team_id` | string | Google Cloud 团队 ID |
 | `accounts[].secure_c_ses` | string | 安全会话 Cookie |
@@ -345,6 +348,58 @@ curl -X POST http://127.0.0.1:8000/v1/chat/completions \
 ```
 
 > **注意**: 内联 base64 图片会自动上传到 Gemini 获取 fileId，然后发送请求。
+
+## Cookie 自动刷新
+
+系统支持自动刷新 Cookie，每小时自动更新所有账号的 Cookie 并保存到本地配置文件。
+
+### 启用方式
+
+**方式一：Web 管理控制台**
+
+在 Web 管理控制台的「系统设置」页面，勾选「Cookie 自动刷新」开关，然后点击「保存设置」。
+
+**方式二：配置文件**
+
+在 `business_gemini_session.json` 中添加配置：
+
+```json
+{
+    "auto_refresh_cookie": true,
+    ...
+}
+```
+
+### 依赖安装
+
+Cookie 自动刷新功能需要安装 Playwright：
+
+```bash
+# 安装 Python 包
+pip install playwright
+
+# 安装 Chromium 浏览器
+playwright install chromium
+```
+
+### Docker 部署
+
+Docker 镜像已自动包含 Playwright 和 Chromium 浏览器，无需额外安装。只需在配置中启用即可。
+
+### 手动刷新
+
+也可以使用命令行手动刷新 Cookie：
+
+```bash
+# 刷新所有账号
+python cookie_refresh.py --once
+
+# 刷新指定账号
+python cookie_refresh.py --once --account 0
+
+# 后台持续运行（独立于主服务）
+python cookie_refresh.py --daemon
+```
 
 ## 注意事项
 

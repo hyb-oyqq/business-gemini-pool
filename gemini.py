@@ -2253,6 +2253,8 @@ def update_config():
         mode = data["image_output_mode"]
         if isinstance(mode, str) and mode.lower() in ("url", "base64"):
             account_manager.config["image_output_mode"] = mode.lower()
+    if "auto_refresh_cookie" in data:
+        account_manager.config["auto_refresh_cookie"] = bool(data["auto_refresh_cookie"])
     account_manager.save_config()
     return jsonify({"success": True})
 
@@ -2448,6 +2450,15 @@ def print_startup_info():
     print(f"  目录: {IMAGE_CACHE_DIR}")
     print(f"  缓存时间: {IMAGE_CACHE_HOURS} 小时")
     
+    # Cookie自动刷新信息
+    auto_refresh = account_manager.config.get("auto_refresh_cookie", False)
+    print(f"\n[Cookie自动刷新]")
+    print(f"  状态: {'✓ 已启用' if auto_refresh else '✗ 未启用'}")
+    if auto_refresh:
+        print(f"  刷新间隔: 1小时")
+    else:
+        print(f"  启用方法: 配置文件中设置 \"auto_refresh_cookie\": true")
+    
     # 账号信息
     total, available = account_manager.get_account_count()
     print(f"\n[账号配置]")
@@ -2490,5 +2501,16 @@ if __name__ == '__main__':
     
     if not account_manager.accounts:
         print("[!] 警告: 没有配置任何账号")
+    
+    # 启动Cookie自动刷新线程
+    try:
+        from cookie_refresh import start_cookie_refresh_thread
+        cookie_thread = start_cookie_refresh_thread()
+        if cookie_thread:
+            print("[Cookie刷新] 后台线程已启动")
+    except ImportError:
+        print("[Cookie刷新] cookie_refresh.py 模块未找到，自动刷新已禁用")
+    except Exception as e:
+        print(f"[Cookie刷新] 启动失败: {e}")
     
     app.run(host='0.0.0.0', port=8000, debug=False)
