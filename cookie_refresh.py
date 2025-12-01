@@ -129,13 +129,12 @@ def refresh_cookie_with_browser(account: dict, proxy: Optional[str] = None) -> O
                 print(f"[Cookie刷新] 正在访问 business.gemini.google ...")
                 page.goto("https://business.gemini.google/", wait_until="domcontentloaded", timeout=30000)
                 
-                # 在当前域设置Cookie
+                # 在当前域设置Cookie (使用url方式)
                 if existing_secure_c_ses:
                     cookies_to_add = [{
                         "name": "__Secure-C_SES",
                         "value": existing_secure_c_ses,
-                        "domain": ".google.com",
-                        "path": "/",
+                        "url": "https://business.gemini.google/",
                         "secure": True,
                         "sameSite": "None"
                     }]
@@ -144,7 +143,6 @@ def refresh_cookie_with_browser(account: dict, proxy: Optional[str] = None) -> O
                             "name": "__Host-C_OSES",
                             "value": existing_host_c_oses,
                             "url": "https://business.gemini.google/",
-                            "path": "/",
                             "secure": True,
                             "sameSite": "Strict"
                         })
