@@ -115,32 +115,8 @@ def refresh_cookie_with_browser(account: dict, proxy: Optional[str] = None) -> O
             }
 
             # 设置现有Cookie以保持登录状态
-            if existing_secure_c_ses:
-                cookies_to_set = []
-                # 注意：domain 需要带前缀点表示包含子域名
-                for domain in [".google.com", ".gemini.google.com", "business.gemini.google.com"]:
-                    cookies_to_set.append({
-                        "name": "__Secure-C_SES",
-                        "value": existing_secure_c_ses,
-                        "domain": domain,
-                        "path": "/",
-                        "secure": True,
-                        "sameSite": "None"
-                    })
-                if existing_host_c_oses:
-                    for domain in [".google.com", ".gemini.google.com", "business.gemini.google.com"]:
-                        cookies_to_set.append({
-                            "name": "__Host-C_OSES",
-                            "value": existing_host_c_oses,
-                            "domain": domain,
-                            "path": "/",
-                            "secure": True,
-                            "sameSite": "None"
-                        })
-                context_options["storage_state"] = {
-                    "cookies": cookies_to_set,
-                    "origins": []
-                }
+            # 注意: __Host- 前缀的Cookie不能设置domain，必须是当前域
+            # 所以我们不在context创建时设置cookie，而是在页面加载后通过context.add_cookies设置
 
             if proxy:
                 context_options["proxy"] = {"server": proxy}
@@ -149,9 +125,38 @@ def refresh_cookie_with_browser(account: dict, proxy: Optional[str] = None) -> O
             page = context.new_page()
 
             try:
-                # 访问 business.gemini.google
-                page.goto("https://business.gemini.google/", wait_until="networkidle", timeout=60000)
-                page.wait_for_timeout(8000)
+                # 先访问目标域名以便设置Cookie
+                print(f"[Cookie刷新] 正在访问 business.gemini.google ...")
+                page.goto("https://business.gemini.google/", wait_until="domcontentloaded", timeout=30000)
+                
+                # 在当前域设置Cookie
+                if existing_secure_c_ses:
+                    cookies_to_add = [{
+                        "name": "__Secure-C_SES",
+                        "value": existing_secure_c_ses,
+                        "domain": ".google.com",
+                        "path": "/",
+                        "secure": True,
+                        "sameSite": "None"
+                    }]
+                    if existing_host_c_oses:
+                        cookies_to_add.append({
+                            "name": "__Host-C_OSES",
+                            "value": existing_host_c_oses,
+                            "url": "https://business.gemini.google/",
+                            "path": "/",
+                            "secure": True,
+                            "sameSite": "Strict"
+                        })
+                    try:
+                        context.add_cookies(cookies_to_add)
+                        print(f"[Cookie刷新] Cookie已设置，刷新页面...")
+                    except Exception as e:
+                        print(f"[Cookie刷新] 设置Cookie失败: {e}")
+                
+                # 刷新页面使Cookie生效
+                page.reload(wait_until="networkidle", timeout=60000)
+                page.wait_for_timeout(5000)
 
                 # 等待页面加载
                 try:
