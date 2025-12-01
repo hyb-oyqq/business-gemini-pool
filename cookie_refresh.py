@@ -117,7 +117,8 @@ def refresh_cookie_with_browser(account: dict, proxy: Optional[str] = None) -> O
             # 设置现有Cookie以保持登录状态
             if existing_secure_c_ses:
                 cookies_to_set = []
-                for domain in [".gemini.google", "business.gemini.google"]:
+                # 注意：domain 需要带前缀点表示包含子域名
+                for domain in [".google.com", ".gemini.google.com", "business.gemini.google.com"]:
                     cookies_to_set.append({
                         "name": "__Secure-C_SES",
                         "value": existing_secure_c_ses,
@@ -127,14 +128,15 @@ def refresh_cookie_with_browser(account: dict, proxy: Optional[str] = None) -> O
                         "sameSite": "None"
                     })
                 if existing_host_c_oses:
-                    cookies_to_set.append({
-                        "name": "__Host-C_OSES",
-                        "value": existing_host_c_oses,
-                        "domain": "business.gemini.google",
-                        "path": "/",
-                        "secure": True,
-                        "sameSite": "None"
-                    })
+                    for domain in [".google.com", ".gemini.google.com", "business.gemini.google.com"]:
+                        cookies_to_set.append({
+                            "name": "__Host-C_OSES",
+                            "value": existing_host_c_oses,
+                            "domain": domain,
+                            "path": "/",
+                            "secure": True,
+                            "sameSite": "None"
+                        })
                 context_options["storage_state"] = {
                     "cookies": cookies_to_set,
                     "origins": []
@@ -160,20 +162,25 @@ def refresh_cookie_with_browser(account: dict, proxy: Optional[str] = None) -> O
 
                 # 检查是否在登录页面
                 current_url = page.url
+                print(f"[Cookie刷新] 当前页面URL: {current_url}")
+                
                 is_login_page = (
-                    "accounts.google.com" in current_url or 
-                    "signin" in current_url.lower() or
-                    "auth.business.gemini.google/login" in current_url
+                    "accounts.google.com/v3/signin" in current_url or
+                    "accounts.google.com/ServiceLogin" in current_url
                 )
 
                 if is_login_page:
-                    print(f"[Cookie刷新] 检测到登录页面，Cookie可能已过期")
-                    # 等待自动登录
+                    print(f"[Cookie刷新] 检测到Google登录页面，等待自动跳转...")
+                    # 等待自动登录跳转
                     try:
-                        page.wait_for_url("**/business.gemini.google/**", timeout=15000)
+                        page.wait_for_timeout(5000)
                         current_url = page.url
-                        if "business.gemini.google" in current_url and "login" not in current_url:
-                            is_login_page = False
+                        print(f"[Cookie刷新] 等待后URL: {current_url}")
+                        # 重新判断是否还在登录页
+                        is_login_page = (
+                            "accounts.google.com/v3/signin" in current_url or
+                            "accounts.google.com/ServiceLogin" in current_url
+                        )
                     except:
                         pass
 
@@ -267,9 +274,15 @@ def refresh_cookie_with_browser(account: dict, proxy: Optional[str] = None) -> O
                 # 检查Cookie是否更新
                 cookie_changed = secure_c_ses != existing_secure_c_ses
                 
-                if is_login_page and not cookie_changed and existing_secure_c_ses:
-                    print("[Cookie刷新] Cookie值未变化且页面在登录页，Cookie可能已失效")
+                # 只有在真正的Google登录页且完全没获取到新Cookie时才判定失败
+                if is_login_page and not secure_c_ses:
+                    print("[Cookie刷新] 在登录页且未获取到Cookie，Cookie可能已失效")
                     return None
+                
+                if cookie_changed:
+                    print(f"[Cookie刷新] Cookie已更新")
+                else:
+                    print(f"[Cookie刷新] Cookie值未变化（可能只是续期）")
 
                 return {
                     "secure_c_ses": secure_c_ses,

@@ -1535,7 +1535,12 @@
                     throw new Error(data.error || data.detail || '未知错误');
                 }
             } catch (e) {
-                showToast('自动刷新失败: ' + e.message, 'error');
+                const errMsg = e.message || '';
+                if (errMsg.includes('登录') || errMsg.includes('过期') || errMsg.includes('失效')) {
+                    showToast('Cookie已过期，请手动登录获取新Cookie', 'warning');
+                } else {
+                    showToast('自动刷新失败: ' + errMsg, 'error');
+                }
             }
         }
 
