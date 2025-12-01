@@ -2133,6 +2133,45 @@ def refresh_account_cookies(account_id):
     return jsonify({"success": True, "message": "Cookie已刷新"})
 
 
+@app.route('/api/accounts/<int:account_id>/auto-refresh-cookie', methods=['POST'])
+@require_admin
+def auto_refresh_account_cookie(account_id):
+    """使用Playwright自动刷新账号Cookie"""
+    if account_id < 0 or account_id >= len(account_manager.accounts):
+        return jsonify({"error": "账号不存在"}), 404
+    
+    try:
+        from cookie_refresh import refresh_account_cookie, PLAYWRIGHT_AVAILABLE, check_playwright_browser
+        
+        if not PLAYWRIGHT_AVAILABLE:
+            return jsonify({"success": False, "error": "Playwright未安装，无法自动刷新Cookie。请先运行: pip install playwright && playwright install chromium"}), 400
+        
+        if not check_playwright_browser():
+            return jsonify({"success": False, "error": "Playwright浏览器未安装。请运行: playwright install chromium"}), 400
+        
+        account = account_manager.accounts[account_id]
+        proxy = account_manager.config.get("proxy")
+        
+        success = refresh_account_cookie(account_id, account, proxy)
+        
+        if success:
+            # 重新加载配置以获取更新后的Cookie
+            account_manager.load_config()
+            # 清除JWT缓存
+            state = account_manager.account_states.get(account_id, {})
+            state["jwt"] = None
+            state["jwt_time"] = 0
+            account_manager.account_states[account_id] = state
+            return jsonify({"success": True, "message": "Cookie自动刷新成功"})
+        else:
+            return jsonify({"success": False, "error": "自动刷新失败，请尝试手动输入Cookie"}), 500
+            
+    except ImportError:
+        return jsonify({"success": False, "error": "cookie_refresh模块未找到"}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": f"自动刷新失败: {str(e)}"}), 500
+
+
 @app.route('/api/accounts/<int:account_id>/test', methods=['GET'])
 @require_admin
 def test_account(account_id):

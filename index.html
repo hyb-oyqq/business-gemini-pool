@@ -909,6 +909,33 @@
         </div>
     </div>
 
+    <!-- 刷新Cookie选择弹窗 -->
+    <div class="modal" id="refreshCookieChoiceModal">
+        <div class="modal-content" style="max-width: 400px;">
+            <div class="modal-header">
+                <h3>刷新Cookie</h3>
+                <button class="modal-close" onclick="closeModal('refreshCookieChoiceModal')" title="关闭">&times;</button>
+            </div>
+            <div class="modal-body" style="text-align: center;">
+                <input type="hidden" id="refreshChoiceAccountId">
+                <p class="text-muted" style="margin-bottom: 20px;">请选择刷新Cookie的方式：</p>
+                <div style="display: flex; flex-direction: column; gap: 12px;">
+                    <button class="btn btn-primary" onclick="doAutoRefreshCookie()" style="padding: 12px 24px;">
+                        🔄 自动刷新
+                        <div style="font-size: 12px; opacity: 0.8; margin-top: 4px;">使用Playwright自动获取新Cookie</div>
+                    </button>
+                    <button class="btn btn-outline" onclick="showManualRefreshCookieModal()" style="padding: 12px 24px;">
+                        ✏️ 手动输入
+                        <div style="font-size: 12px; opacity: 0.8; margin-top: 4px;">手动填写新的Cookie值</div>
+                    </button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="closeModal('refreshCookieChoiceModal')">取消</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 刷新Cookie模态框 -->
     <div class="modal" id="refreshCookieModal">
         <div class="modal-content">
@@ -1455,7 +1482,7 @@
         }
 
         /**
-         * 显示刷新Cookie的模态框
+         * 显示刷新Cookie选择弹窗
          * @param {number} id - 账号ID
          */
         function showRefreshCookieModal(id) {
@@ -1465,6 +1492,17 @@
                 return;
             }
             
+            document.getElementById('refreshChoiceAccountId').value = id;
+            openModal('refreshCookieChoiceModal');
+        }
+
+        /**
+         * 显示手动输入Cookie的模态框
+         */
+        function showManualRefreshCookieModal() {
+            const id = document.getElementById('refreshChoiceAccountId').value;
+            closeModal('refreshCookieChoiceModal');
+            
             document.getElementById('refreshAccountId').value = id;
             document.getElementById('refreshSecureCses').value = '';
             document.getElementById('refreshHostCoses').value = '';
@@ -1472,6 +1510,33 @@
             document.getElementById('refreshCookieJson').value = '';
             
             openModal('refreshCookieModal');
+        }
+
+        /**
+         * 自动刷新Cookie
+         */
+        async function doAutoRefreshCookie() {
+            const id = document.getElementById('refreshChoiceAccountId').value;
+            closeModal('refreshCookieChoiceModal');
+            
+            showToast('正在自动刷新Cookie，请稍候...', 'info');
+            
+            try {
+                const res = await apiFetch(`${API_BASE}/api/accounts/${id}/auto-refresh-cookie`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const data = await res.json();
+                
+                if (res.ok && data.success) {
+                    showToast('Cookie自动刷新成功!', 'success');
+                    loadAccounts();
+                } else {
+                    throw new Error(data.error || data.detail || '未知错误');
+                }
+            } catch (e) {
+                showToast('自动刷新失败: ' + e.message, 'error');
+            }
         }
 
         /**
