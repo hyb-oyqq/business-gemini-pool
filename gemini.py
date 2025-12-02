@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import mimetypes
+import random
 import requests
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -51,6 +52,11 @@ GETOXSRF_URL = "https://business.gemini.google/auth/getoxsrf"
 AUTH_ERROR_COOLDOWN_SECONDS = 900      # 凭证错误，15分钟
 RATE_LIMIT_COOLDOWN_SECONDS = 300      # 触发限额，5分钟
 GENERIC_ERROR_COOLDOWN_SECONDS = 120   # 其他错误的短暂冷却
+
+# 过载重试配置
+OVERLOAD_RETRY_MAX = 3                 # 过载重试次数
+OVERLOAD_RETRY_BASE_DELAY = 2          # 过载重试基础延迟（秒）
+OVERLOAD_RETRY_MAX_DELAY = 30          # 过载重试最大延迟（秒）
 LOG_LEVELS = {"DEBUG": 10, "INFO": 20, "ERROR": 40}
 DEFAULT_LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 CURRENT_LOG_LEVEL_NAME = DEFAULT_LOG_LEVEL if DEFAULT_LOG_LEVEL in LOG_LEVELS else "INFO"
@@ -125,6 +131,10 @@ class AccountRateLimitError(AccountError):
 
 class AccountRequestError(AccountError):
     """其他请求异常"""
+
+
+class AccountServerOverloadError(AccountError):
+    """服务端过载/超时异常（可重试）"""
 
 
 class NoAvailableAccount(AccountError):
@@ -635,6 +645,20 @@ def raise_for_account_response(resp: requests.Response, action: str):
         raise AccountAuthError(f"{action} 认证失败: {status} - {body_preview}", status)
     if status == 429 or "quota" in lower_body or "exceed" in lower_body or "limit" in lower_body:
         raise AccountRateLimitError(f"{action} 触发限额: {status} - {body_preview}", status)
+    
+    # 检测服务端过载/超时错误（可重试）
+    is_overload = (
+        status in (500, 502, 503, 504) and (
+            "llm_overloaded" in lower_body or
+            "overloaded" in lower_body or
+            "temporarily unavailable" in lower_body or
+            "internal error" in lower_body or
+            "gateway" in lower_body
+        )
+    ) or status == 504  # 504网关超时始终视为过载
+    
+    if is_overload:
+        raise AccountServerOverloadError(f"{action} 服务过载: {status} - {body_preview}", status)
 
     raise AccountRequestError(f"{action} 请求失败: {status} - {body_preview}", status)
 
@@ -776,19 +800,60 @@ def upload_file_to_gemini(jwt: str, session_name: str, team_id: str,
     print(f"[DEBUG][upload_file_to_gemini] 准备发送请求到: {ADD_CONTEXT_FILE_URL}")
     print(f"[DEBUG][upload_file_to_gemini] 使用代理: {proxy if proxy else '无'}")
     
-    request_start = time.time()
-    try:
-        resp = requests.post(
-            ADD_CONTEXT_FILE_URL,
-            headers=get_headers(jwt),
-            json=body,
-            proxies=proxies,
-            verify=False,
-            timeout=60
-        )
-    except requests.RequestException as e:
-        raise AccountRequestError(f"文件上传请求失败: {e}") from e
-    print(f"[DEBUG][upload_file_to_gemini] 请求完成 - 耗时: {time.time() - request_start:.2f}秒, 状态码: {resp.status_code}")
+    # 指数退避重试逻辑
+    for attempt in range(OVERLOAD_RETRY_MAX + 1):
+        request_start = time.time()
+        try:
+            resp = requests.post(
+                ADD_CONTEXT_FILE_URL,
+                headers=get_headers(jwt),
+                json=body,
+                proxies=proxies,
+                verify=False,
+                timeout=60
+            )
+            print(f"[DEBUG][upload_file_to_gemini] 请求完成 - 耗时: {time.time() - request_start:.2f}秒, 状态码: {resp.status_code}")
+            
+            if resp.status_code == 200:
+                break
+            
+            # 检查是否是可重试的过载错误
+            body_preview = resp.text[:500] if resp.text else ""
+            lower_body = body_preview.lower()
+            is_overload = (
+                resp.status_code in (500, 502, 503, 504) and (
+                    "llm_overloaded" in lower_body or
+                    "overloaded" in lower_body or
+                    "temporarily unavailable" in lower_body or
+                    "internal error" in lower_body or
+                    "gateway" in lower_body
+                )
+            ) or resp.status_code == 504
+            
+            if is_overload and attempt < OVERLOAD_RETRY_MAX:
+                delay = min(
+                    OVERLOAD_RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 1),
+                    OVERLOAD_RETRY_MAX_DELAY
+                )
+                print(f"[文件上传] 服务过载({resp.status_code})，第{attempt+1}次重试，等待{delay:.1f}秒...")
+                time.sleep(delay)
+                continue
+            else:
+                print(f"[DEBUG][upload_file_to_gemini] 上传失败 - 响应内容: {resp.text[:500]}")
+                raise_for_account_response(resp, "文件上传")
+                
+        except requests.exceptions.Timeout as e:
+            if attempt < OVERLOAD_RETRY_MAX:
+                delay = min(
+                    OVERLOAD_RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 1),
+                    OVERLOAD_RETRY_MAX_DELAY
+                )
+                print(f"[文件上传] 请求超时，第{attempt+1}次重试，等待{delay:.1f}秒...")
+                time.sleep(delay)
+                continue
+            raise AccountServerOverloadError(f"文件上传超时: {e}") from e
+        except requests.RequestException as e:
+            raise AccountRequestError(f"文件上传请求失败: {e}") from e
     
     if resp.status_code != 200:
         print(f"[DEBUG][upload_file_to_gemini] 上传失败 - 响应内容: {resp.text[:500]}")
@@ -1083,7 +1148,7 @@ def upload_inline_image_to_gemini(jwt: str, session_name: str, team_id: str,
 
 def stream_chat_with_images(jwt: str, sess_name: str, message: str, 
                             proxy: str, team_id: str, file_ids: List[str] = None) -> ChatResponse:
-    """发送消息并流式接收响应"""
+    """发送消息并流式接收响应（带指数退避重试）"""
     query_parts = [{"text": message}]
     request_file_ids = file_ids if file_ids else []
     
@@ -1112,19 +1177,66 @@ def stream_chat_with_images(jwt: str, sess_name: str, message: str,
     }
 
     proxies = {"http": proxy, "https": proxy} if proxy else None
-    try:
-        resp = requests.post(
-            STREAM_ASSIST_URL,
-            headers=get_headers(jwt),
-            json=body,
-            proxies=proxies,
-            verify=False,
-            timeout=120,
-            stream=True
-        )
-    except requests.RequestException as e:
-        raise AccountRequestError(f"聊天请求失败: {e}") from e
-
+    last_error = None
+    
+    # 指数退避重试逻辑（针对服务过载/超时）
+    for attempt in range(OVERLOAD_RETRY_MAX + 1):
+        try:
+            resp = requests.post(
+                STREAM_ASSIST_URL,
+                headers=get_headers(jwt),
+                json=body,
+                proxies=proxies,
+                verify=False,
+                timeout=120,
+                stream=True
+            )
+            
+            if resp.status_code == 200:
+                break  # 成功，退出重试循环
+            
+            # 检查是否是可重试的过载错误
+            body_preview = resp.text[:500] if resp.text else ""
+            lower_body = body_preview.lower()
+            is_overload = (
+                resp.status_code in (500, 502, 503, 504) and (
+                    "llm_overloaded" in lower_body or
+                    "overloaded" in lower_body or
+                    "temporarily unavailable" in lower_body or
+                    "internal error" in lower_body or
+                    "gateway" in lower_body
+                )
+            ) or resp.status_code == 504
+            
+            if is_overload and attempt < OVERLOAD_RETRY_MAX:
+                # 指数退避：2^attempt * base_delay + 随机抖动
+                delay = min(
+                    OVERLOAD_RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 1),
+                    OVERLOAD_RETRY_MAX_DELAY
+                )
+                print(f"[聊天] 服务过载({resp.status_code})，第{attempt+1}次重试，等待{delay:.1f}秒...")
+                time.sleep(delay)
+                last_error = AccountServerOverloadError(f"聊天请求 服务过载: {resp.status_code}", resp.status_code)
+                continue
+            else:
+                # 非过载错误或已达最大重试次数
+                raise_for_account_response(resp, "聊天请求")
+                
+        except requests.exceptions.Timeout as e:
+            last_error = e
+            if attempt < OVERLOAD_RETRY_MAX:
+                delay = min(
+                    OVERLOAD_RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 1),
+                    OVERLOAD_RETRY_MAX_DELAY
+                )
+                print(f"[聊天] 请求超时，第{attempt+1}次重试，等待{delay:.1f}秒...")
+                time.sleep(delay)
+                continue
+            raise AccountServerOverloadError(f"聊天请求超时: {e}") from e
+        except requests.RequestException as e:
+            raise AccountRequestError(f"聊天请求失败: {e}") from e
+    
+    # 如果最终还是失败，抛出最后的错误
     if resp.status_code != 200:
         raise_for_account_response(resp, "聊天请求")
 
@@ -1493,6 +1605,13 @@ def upload_file():
                 print(f"[文件上传] 第{retry_idx+1}次尝试失败(凭证): {e}")
                 print(f"[文件上传] 本次尝试耗时: {time.time()-retry_start:.3f}秒")
                 continue
+            except AccountServerOverloadError as e:
+                last_error = e
+                if account_idx is not None:
+                    account_manager.mark_account_cooldown(account_idx, str(e), 30)
+                print(f"[文件上传] 第{retry_idx+1}次尝试失败(服务过载): {e}")
+                print(f"[文件上传] 本次尝试耗时: {time.time()-retry_start:.3f}秒")
+                continue
             except AccountRequestError as e:
                 last_error = e
                 if account_idx is not None:
@@ -1729,6 +1848,13 @@ def chat_completions():
                     if account_idx is not None:
                         account_manager.mark_account_cooldown(account_idx, str(e), account_manager.auth_error_cooldown)
                     print(f"[聊天] 第{retry_idx+1}次尝试失败(凭证): {e}")
+                    continue
+                except AccountServerOverloadError as e:
+                    # 服务过载错误：使用较短冷却（30秒），因为已经在函数内部重试过了
+                    last_error = e
+                    if account_idx is not None:
+                        account_manager.mark_account_cooldown(account_idx, str(e), 30)
+                    print(f"[聊天] 第{retry_idx+1}次尝试失败(服务过载): {e}")
                     continue
                 except AccountRequestError as e:
                     last_error = e
